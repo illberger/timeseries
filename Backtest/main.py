@@ -12,7 +12,7 @@ import optuna
 from matplotlib import pyplot as plt
 import numpy as np
 from binance_client import BinanceWebSocketClient
-from model_manager import ModelManager, naive_forecast
+from model_manager import ModelManager, naive_forecast, OptimizerArgs
 import tensorflow as tf
 import gc
 import model_manager
@@ -53,11 +53,51 @@ A list of absolute errors for each sequence/datapoint predicted so far.
 """
 last_fetch_shift = -1
 
+model_errs_signed = []
+naive_errs_signed = []
+
 start_date = None
 time_stat = None
 
 IS_SENTIMENT_EMBEDDED = True
 OFFLINE_PATH = ""
+
+
+def dm_test(errors_model, errors_naive, h=1, power=1, lag=SEQ_LEN):
+    import numpy as np, math
+    e1 = np.asarray(errors_model);
+    e2 = np.asarray(errors_naive)
+    assert e1.shape == e2.shape == (e1.size,), "length mismatch"
+    if power == 1:
+        d = np.abs(e1) - np.abs(e2)
+    elif power == 2:
+        d = e1 ** 2 - e2 ** 2
+    else:
+        d = np.abs(e1) ** power - np.abs(e2) ** power
+
+    T = d.size
+    dbar = d.mean()
+    dc = d - dbar
+
+    if lag is None:
+        lag = max(1, int(round(T ** (1 / 3))))
+
+    gamma0 = np.dot(dc, dc) / T
+    s = gamma0
+    for k in range(1, min(lag, T - 1) + 1):
+        gk = np.dot(dc[:-k], dc[k:]) / T
+        w = 1.0 - k / (lag + 1.0)
+        s += 2.0 * w * gk
+    var_hat = s / T
+    scale = 1.0
+    if h > 1:
+        scale = math.sqrt(T + 1 - 2 * h + (h * (h - 1)) / T) / math.sqrt(T)
+
+    dm_stat = (dbar / math.sqrt(var_hat)) * scale
+    from math import erf, sqrt
+    cdf = 0.5 * (1.0 + erf(abs(dm_stat) / sqrt(2.0)))
+    p_two = 2.0 * (1.0 - cdf)
+    return dm_stat, p_two
 
 
 def mae(e):
@@ -105,13 +145,13 @@ def subscribe_and_predict(ws_client, model_mng, symbol, fetch_shift, slice_shift
             ret_naive_mae = rolling_mae_naive
             ret_lstm_mae = rolling_mae
             step_x_axis = (SEQ_LEN * fetch_shift) + slice_shift
-            if model_mng.verbose > 0:
-                assert len(lstm_scalar_mae) <= max_days
-                mae_tot_lstm = np.mean(lstm_scalar_mae)
-                mae_tot_naive = np.mean(naive_scalar_mae)
-                print(
-                    f"MAE: [ML: {rolling_mae:.6f}, BASELINE: {rolling_mae_naive:.6f}] @X: {step_x_axis}. W: {fetch_shift}/{max_days}."
-                    f"Full MAE [ML: {mae_tot_lstm:.6f}, BASELINE: {mae_tot_naive:.6f}]")
+
+            assert len(lstm_scalar_mae) <= max_days
+            mae_tot_lstm = np.mean(lstm_scalar_mae)
+            mae_tot_naive = np.mean(naive_scalar_mae)
+            print(
+                f"MAE: [ML: {rolling_mae:.6f}, BASELINE: {rolling_mae_naive:.6f}] @X: {step_x_axis}. W: {fetch_shift}/{max_days}."
+                f"Full MAE [ML: {mae_tot_lstm:.6f}, BASELINE: {mae_tot_naive:.6f}]")
         while len(ws_client.closed_candles.get(symbol, [])) < SLIDE:
             time.sleep(0.01)
 
@@ -123,15 +163,15 @@ def subscribe_and_predict(ws_client, model_mng, symbol, fetch_shift, slice_shift
     while seq_scaled is None:
         time.sleep(0.05)
     _, lstm_pred, lr, k = model_mng.predict_close(symbol,
-                                                  seq_scaled,
-                                                  seq_raw,
-                                                  slice_shift,
-                                                  fetch_shift,
-                                                  max_days,
-                                                  mae_lstm,
-                                                  mae_naive,
-                                                  sigma_close_vec,
-                                                  mu_close_vec)
+                                                    seq_scaled,
+                                                    seq_raw,
+                                                    slice_shift,
+                                                    fetch_shift,
+                                                    max_days,
+                                                    mae_lstm,
+                                                    mae_naive,
+                                                    sigma_close_vec,
+                                                    mu_close_vec)
     _, naive_pred = naive_forecast(symbol, seq_raw)
 
     return last_open_ts, lstm_pred, naive_pred, ret_lstm_mae, ret_naive_mae, lr, k
@@ -153,15 +193,12 @@ def monitor_predictions(_ws_client, _model_mng, _symbol, _max_days, _start_time_
     fetch_shift = 0
     slice_offset = 0
     time_stat = time.time()
-    if disable_plots:
-        start_time_ms = int(time.time() * 1000)
-    if _model_mng.verbose > 0:
-        print(f"Backtest started at {_start_time_ms} for {_max_days} days.\n")
+    print(f"Backtest started at {_start_time_ms} for {_max_days} days.\n")
 
     mae_lstm: Optional = None
     mae_naive: Optional = None
-    lr: Optional = None
-    k: Optional = None
+    #lr: Optional = None
+    #k: Optional = None
     last_ts, lstm, naive, mae_lstm, mae_naive, _, _ = subscribe_and_predict(_ws_client,
                                                                             _model_mng,
                                                                             _symbol,
@@ -201,7 +238,10 @@ def monitor_predictions(_ws_client, _model_mng, _symbol, _max_days, _start_time_
             #    'k': k
         })
         lstm_abs_errors.append(err)
+        #model_errs_signed.append(err)
+
         naive_abs_errors.append(err_naive)
+        #naive_errs_signed.append(err_naive)
         slice_offset += 1
         if slice_offset + SEQ_LEN >= len(_ws_client.closed_candles[_symbol]):
             fetch_shift += 1
@@ -218,6 +258,9 @@ def monitor_predictions(_ws_client, _model_mng, _symbol, _max_days, _start_time_
                                                                                  mae_naive)
         #else:
         #    continue
+
+    #dm, p = dm_test(model_errs_signed, naive_errs_signed, h=1, power=1, lag=SEQ_LEN)
+    #print(f"DM={dm:.3f}, p={p:.4f}")
 
     #valid = [i for i, r in enumerate(true_records) if r['lr'] is not None]
     idx = np.arange(len(true_records))  # Evenely spaced 1d array of integers
@@ -376,17 +419,26 @@ def tune() -> None:
         pruner=optuna.pruners.MedianPruner()
     )
 
+    offline_shift = 12
     def objective(trial: optuna.trial.Trial):
         max_days = 165
-        update_interval = trial.suggest_categorical("interval", [3, 4, 5, 6])
-        offline_shift = trial.suggest_categorical("shift", [6, 8, 10, 12, 14])
-        perf_fast_N = trial.suggest_float("alpha_fast_N_Frac", 0.1, 1.0)
-        perf_slow_N = trial.suggest_float("alpha_slow_N_frac", perf_fast_N, 21)
-        adaptive = trial.suggest_categorical("adaptive", [0, 1])
-        if adaptive == 1:
-            do_per = True
-        else:
-            do_per = False
+
+        per_alpha = trial.suggest_float("per_alpha", 0.7, 1.0)  # now mui importante than ever
+        per_gamma = trial.suggest_float("per_gamma", 0.2, 0.6)
+        interval = trial.suggest_categorical("interval_frac", [0.25, 0.5, 0.75, 1, 2, 3, 4, 5, 6])
+        update_interval = int(SEQ_LEN * interval)
+        optimizer_args = OptimizerArgs(
+            optimizer_name=trial.suggest_categorical("opt_name", ["Adam", "SGD"]),
+            new=True,
+            ref_lr=trial.suggest_float("ref_lr", 1e-6, 1e-4, log=True),
+            min_lr_frac=trial.suggest_float("min_lr_frac", 0.05, 0.2),
+            lr_scale=trial.suggest_float("lr_scale", 1.0, 3.0),
+            per=True,
+            forget=False,
+            update_interval=update_interval,
+            offline_shift=offline_shift,
+            max_days=max_days,
+        )
 
         global last_fetch_shift, true_records
         last_fetch_shift = -1
@@ -394,32 +446,33 @@ def tune() -> None:
         true_records.clear()
         lstm_scalar_mae.clear()
         naive_scalar_mae.clear()
+        model_errs_signed.clear()
+        naive_errs_signed.clear()
         ws.closed_candles["BTCUSDC"] = []
         model_manager.TOTAL_UPDATES = 0
         tf.keras.backend.clear_session()
         gc.collect()
-
         model = load_model()
-        model_mnger = ModelManager(model,
+        model_mnger = ModelManager(model=model,
+                                   optimizer_args=optimizer_args,
                                    max_days=max_days,
                                    grad_clip=False,
-                                   min_lr=5e-5,
-                                   max_lr=1e-4,
-                                   huber_pct=95,  #
-                                   alpha_max=0.7,
-                                   alpha_min=0.15,
-                                   batch_size=128,
-                                   level=0.7,
-                                   trend=0.3,
-                                   w_perf=0.6,
-                                   w_sent=0.4,
-                                   dsc_momentum=0.3,
-                                   update_interval=int(SEQ_LEN * update_interval),
+                                   huber_pct=95,
+                                   per_alpha=per_alpha,
+                                   per_beta_min=0.1,
+                                   per_beta_max=0.7,
+                                   trend_alpha=0.0278,
+                                   trend_lambda=0.6508,
+                                   trend_floor=1.882e-5,
+                                   trend_gamma=1.634,
+                                   perf_scale_beta=0.0574,
+                                   batch_size=16,
+                                   update_interval=update_interval,
                                    offline_shift=offline_shift,
-                                   per=do_per,
-                                   is_sent=IS_SENTIMENT_EMBEDDED,
-                                   perf_fast=perf_fast_N,
-                                   perf_slow=perf_slow_N)
+                                   per=True,
+                                   perf_slow=1,
+                                   perf_fast=0.05,
+                                   sent_gamma=per_gamma)
         metrics = monitor_predictions(
             ws, model_mnger, "BTCUSDC", _max_days=max_days,
             _start_time_ms=start_time_ms,
@@ -427,7 +480,7 @@ def tune() -> None:
         )
         return metrics['mae_lstm']
 
-    study.optimize(objective, n_trials=40)
+    study.optimize(objective, n_trials=5)
     print("Bästa parametrar:", study.best_params)
     print("Bästa MAE_LSTM :", study.best_value)
 
@@ -435,27 +488,44 @@ def tune() -> None:
 def normal_run() -> None:
     models = load_model()
     max_days = 165
+    offline_shift = 12
+    update_interval = int(SEQ_LEN * 0.5)
     # int(time.time() * 1000) for systemtime
     time_start = 1751320800000  # 2025-07-01
-    # see docstring in constructor
-    model_mnger = ModelManager(models,
+
+    optimizer_args = OptimizerArgs(
+        optimizer_name="Adam",
+        new=True,
+        ref_lr=1e-06,
+        min_lr_frac=0.1,
+        lr_scale=2.5,
+        per=True,
+        forget=False,
+        update_interval=update_interval,
+        offline_shift=offline_shift,
+        max_days=max_days,
+    )
+
+    model_mnger = ModelManager(model=models,
+                               optimizer_args=optimizer_args,
                                max_days=max_days,
                                grad_clip=False,
                                huber_pct=95,
-                               alpha_max=0.7,
-                               alpha_min=0.15,
+                               per_alpha=0.78,
+                               per_beta_min=0.1,
+                               per_beta_max=0.7,
+                               trend_alpha=0.0278,
+                               trend_lambda=0.6508,
+                               trend_floor=1.882e-5,
+                               trend_gamma=1.634,
+                               perf_scale_beta=0.0574,
                                batch_size=16,
-                               level=0.7,
-                               trend=0.3,
-                               w_perf=0.6,
-                               w_sent=0.4,
-                               dsc_momentum=0.0,
-                               update_interval=int(SEQ_LEN * 1),
-                               offline_shift=12,
+                               update_interval=update_interval,
+                               offline_shift=offline_shift,
                                per=True,
-                               is_sent=IS_SENTIMENT_EMBEDDED,
                                perf_slow=1,
-                               perf_fast=0.05)
+                               perf_fast=0.05,
+                               sent_gamma=0.18)
 
     ws_client = BinanceWebSocketClient(is_sent_feature=IS_SENTIMENT_EMBEDDED)
     monitor_predictions(ws_client, model_mnger, "BTCUSDC", max_days, time_start)
@@ -464,3 +534,4 @@ def normal_run() -> None:
 
 if __name__ == '__main__':
     normal_run()
+    #tune()
