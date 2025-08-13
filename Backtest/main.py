@@ -489,7 +489,7 @@ def normal_run() -> None:
     models = load_model()
     max_days = 165
     offline_shift = 12
-    update_interval = int(SEQ_LEN * 0.5)
+    update_interval = int(SEQ_LEN * 0.25)
     # int(time.time() * 1000) for systemtime
     time_start = 1751320800000  # 2025-07-01
 
