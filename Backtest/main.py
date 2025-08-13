@@ -423,16 +423,16 @@ def tune() -> None:
     def objective(trial: optuna.trial.Trial):
         max_days = 165
 
-        per_alpha = trial.suggest_float("per_alpha", 0.7, 1.0)  # now mui importante than ever
-        per_gamma = trial.suggest_float("per_gamma", 0.2, 0.6)
-        interval = trial.suggest_categorical("interval_frac", [0.25, 0.5, 0.75, 1, 2, 3, 4, 5, 6])
+        per_alpha = trial.suggest_float("per_alpha", 0.5, 1.0)  # now mui importante than ever
+        per_gamma = trial.suggest_float("per_gamma", 0.15, 0.6)
+        interval = 0.25
         update_interval = int(SEQ_LEN * interval)
         optimizer_args = OptimizerArgs(
-            optimizer_name=trial.suggest_categorical("opt_name", ["Adam", "SGD"]),
+            optimizer_name="Adam",
             new=True,
-            ref_lr=trial.suggest_float("ref_lr", 1e-6, 1e-4, log=True),
-            min_lr_frac=trial.suggest_float("min_lr_frac", 0.05, 0.2),
-            lr_scale=trial.suggest_float("lr_scale", 1.0, 3.0),
+            ref_lr=1e-06,
+            min_lr_frac=0.1,
+            lr_scale=2.5,
             per=True,
             forget=False,
             update_interval=update_interval,
@@ -480,7 +480,7 @@ def tune() -> None:
         )
         return metrics['mae_lstm']
 
-    study.optimize(objective, n_trials=5)
+    study.optimize(objective, n_trials=10)
     print("Bästa parametrar:", study.best_params)
     print("Bästa MAE_LSTM :", study.best_value)
 
@@ -489,7 +489,7 @@ def normal_run() -> None:
     models = load_model()
     max_days = 165
     offline_shift = 12
-    update_interval = int(SEQ_LEN * 0.25)
+    update_interval = int(SEQ_LEN * 1)
     # int(time.time() * 1000) for systemtime
     time_start = 1751320800000  # 2025-07-01
 
@@ -505,7 +505,7 @@ def normal_run() -> None:
         offline_shift=offline_shift,
         max_days=max_days,
     )
-
+    # See dosctring
     model_mnger = ModelManager(model=models,
                                optimizer_args=optimizer_args,
                                max_days=max_days,
@@ -525,7 +525,7 @@ def normal_run() -> None:
                                per=True,
                                perf_slow=1,
                                perf_fast=0.05,
-                               sent_gamma=0.18)
+                               sent_gamma=1.5)
 
     ws_client = BinanceWebSocketClient(is_sent_feature=IS_SENTIMENT_EMBEDDED)
     monitor_predictions(ws_client, model_mnger, "BTCUSDC", max_days, time_start)

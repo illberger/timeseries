@@ -194,9 +194,9 @@ def init_optimizer(
         optimizer.learning_rate = lr_var
         return optimizer, min_lr_abs, max_lr_abs
     """
-    max_updates_possible = offline_shift / SEQ_LEN
+    max_updates_possible = SEQ_LEN / offline_shift
     if updates_per_day is None:
-        updates_per_day = min(max_updates_possible, SEQ_LEN / update_interval)
+        updates_per_day = max(max_updates_possible, update_interval / SEQ_LEN)
 
     decay_steps = _decay_steps_from_updates(updates_per_day, max_days)
 
@@ -257,6 +257,10 @@ class ModelManager:
         :param offline_shift: This parameter does not affect inference. It determines timesteps between sequences in the replay deque.
                         This parameter does however determine n timesteps online_update is called.
         """
+
+        # Initial priority
+        self.p_new = None
+        self.priority_percentile: final | int = 75
 
         self.grad_clip: final | bool = grad_clip
         self.per: final | bool = per
@@ -473,15 +477,17 @@ class ModelManager:
         """
         ps = np.array([p for (_, _, p, _) in self.replay],
                       dtype=np.float32)
+        self.p_new = np.percentile(ps, self.priority_percentile)
         s_vals = np.array([_s for (_, _, _p, _s) in self.replay], dtype=np.float32)
 
         mu = np.median(s_vals)
         mad = np.median(np.abs(s_vals - mu)) + 1e-8
         z = 1.4826 * (s_vals - mu) / mad
-        zcap = 3.0
+        zcap = 3.0  # reasonable bound, sentimentdata is extremely spiky
         gamma = self.sent_gamma
         boost = np.exp(gamma * np.clip(np.abs(z), 0.0, zcap)).astype(np.float32)
-
+        if self.sent_gamma == 0:
+            assert boost.all() == 1
         probs = (ps ** alpha) * boost
         probs /= probs.sum()
         n = len(probs)
@@ -490,6 +496,8 @@ class ModelManager:
         uniform_eps = 0.1
         probs = (1 - uniform_eps) * probs + uniform_eps * uniform_probs
         probs /= probs.sum()
+        #print(f"Update: {TOTAL_UPDATES}. S_gamma: {self.sent_gamma}. PER-Alpha: {self.per_alpha}. P_new: {self.p_new}.\n"
+        #      f"{probs}")
         idx = np.random.choice(len(ps), size=k, replace=False, p=probs)
         batch = [self.replay[i][:2] for i in idx]
         beta = np.clip(self.per_beta(), 0.1, 1.0)
@@ -524,7 +532,8 @@ class ModelManager:
             return ZERO, ZERO, ZERO
 
         s_i = normalized_trend_slope(X_batch[0, :, 7])
-        self.replay.append((X_batch.squeeze(ZERO), y_true.squeeze(ZERO), 1.0, s_i))
+        p_i = 1.0 if self.p_new is None else self.p_new
+        self.replay.append((X_batch.squeeze(ZERO), y_true.squeeze(ZERO), p_i, s_i))
         buffer = list(self.replay)
         n_buffer = len(buffer)
         k = min(n_buffer, self.max_batch)
