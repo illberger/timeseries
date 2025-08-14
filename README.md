@@ -6,7 +6,7 @@
 
 Om man endast vill prova göra inferensdelen,
 så behöver man endast <code>pip install binance-connector</code>
-för själva websocket-grejerna.
+för själva websocket-grejerna. Notera att variabelnamn är tvetydiga då logiken förändrats sedan start
 
 
 För att träna en identisk modell kan man se över <code>db_fetcher.query</code> för datat som används. I <code>/fetching/..</code>
