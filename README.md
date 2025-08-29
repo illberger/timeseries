@@ -2,6 +2,10 @@
 ### Kort om projektet
 <code>Tensorflow v2.10.1</code> & <code>NumPy v1.23.5</code>.
 
+#### Huvudvärk gällande <code>/Backtest</code>
+Notera i <code>model_manager.predict_close()</code> att sekvenserna, i.e. <code>last_unscaled, X_unscaled</code> "laggar" med <code>offline_shift</code>.
+I <code>monitor_predictions</code> beräknas däremot residualen för varje <b>tidsteg</b>, vilket råkar vara 30 minuter. 
+
 ### Kom igång med testkörning
 
 Om man endast vill prova göra inferensdelen,
