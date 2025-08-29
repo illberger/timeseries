@@ -248,7 +248,9 @@ class ModelManager:
                  update_interval: int, offline_shift: int, per: bool,
                  perf_fast: float,
                  perf_slow: float,
-                 sent_gamma: float):
+                 sent_gamma: float,
+                 sent_i_pct: int,
+                 zcap: float):
         """
         :param sent_gamma: Pass 0 to this to disregard Sentiment in the probability term inside the PER algorithm.
         :param update_interval: [Pass 0 to this to never update model. Otherwise, pass it a multiple of SEQ_LEN (it shouldn't require this,
@@ -260,7 +262,8 @@ class ModelManager:
 
         # Initial priority
         self.p_new = None
-        self.priority_percentile: final | int = 75
+        self.priority_percentile: final | int = sent_i_pct
+        self.zcap = zcap
 
         self.grad_clip: final | bool = grad_clip
         self.per: final | bool = per
@@ -273,6 +276,8 @@ class ModelManager:
         self.max_days: final | int = max_days
         self.fast_perf_ema: float | Optional = None
         self.slow_perf_ema: float | Optional = None
+
+        self.const_label_index = SEQ_LEN - SEQ_LEN
 
         # exponent for moving average of performance metrics
         # Note that N now needs to be thought of as timesteps
@@ -424,6 +429,8 @@ class ModelManager:
             self.last_lstm_mae = lstm_mae
             self.last_naive_mae = naive_mae
         symbol = symbol.upper()
+
+        # arrays (seq_len, n_feat), the previous timestep (currently 30 minutes)
         last_scaled = self.last_X_scaled.get(symbol)
         last_unscaled = self.last_X_unscaled.get(symbol)
 
@@ -433,10 +440,12 @@ class ModelManager:
                 all_closes_raw = last_unscaled[:, CLOSE_IDX]
                 mu_last = np.mean(all_closes_raw)
                 sigma_last = np.std(all_closes_raw)
-                new_close_raw = X_unscaled[0, CLOSE_IDX]
+                new_close_raw = X_unscaled[self.const_label_index, CLOSE_IDX]
                 #y_true_norm = (new_close_raw - mu_last) / sigma_last
                 y_true_pct = (new_close_raw - float(all_closes_raw[-1])) / float(all_closes_raw[-1])
                 y_true = np.array([[y_true_pct]], dtype=np.float32)
+
+                # array (k, seq_len, n_feat)
                 x_batch = last_scaled[np.newaxis, ...]
                 if self.do_replay(slice_shift):
                     _, lr, k = self.online_update(symbol, x_batch, y_true,
@@ -444,6 +453,7 @@ class ModelManager:
                                                   self.last_lstm_mae, self.last_naive_mae, slice_shift,
                                                   fetch_shift)
 
+        # arrays (seq_len, n_feat)
         if self.do_replay(slice_shift):
             self.last_X_scaled[symbol] = X_scaled.copy()
             self.last_X_unscaled[symbol] = X_unscaled.copy()
@@ -478,12 +488,12 @@ class ModelManager:
         ps = np.array([p for (_, _, p, _) in self.replay],
                       dtype=np.float32)
         self.p_new = np.percentile(ps, self.priority_percentile)
-        s_vals = np.array([_s for (_, _, _p, _s) in self.replay], dtype=np.float32)
+        s_vals = np.array([_s for (_, _, _, _s) in self.replay], dtype=np.float32)
 
         mu = np.median(s_vals)
         mad = np.median(np.abs(s_vals - mu)) + 1e-8
         z = 1.4826 * (s_vals - mu) / mad
-        zcap = 3.0  # reasonable bound, sentimentdata is extremely spiky
+        zcap = self.zcap
         gamma = self.sent_gamma
         boost = np.exp(gamma * np.clip(np.abs(z), 0.0, zcap)).astype(np.float32)
         if self.sent_gamma == 0:

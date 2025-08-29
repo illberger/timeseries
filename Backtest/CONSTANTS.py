@@ -1,18 +1,11 @@
 SEQ_LEN = 48
-"""
-Number of datapoints in one sequence <=> number of timesteps in one day.
-"""
 WINDOW_LENGTH_DAY = 288
-"""
-The maximum number of timesteps in one day where each datapoint has a fidelity of 5 minutes.
-"""
 CLOSE_IDX = 3
-"""
-Column-index for the ClosePrice, which is of interest in this project
-"""
+
 
 OFFLINE_PATH_SENT = "files/final_model"
-ONLINE_PATH_SAVE = "files/onlinemodel.keras"
+ONLINE_PATH_SAVE = "files/online_model.keras"
+CHECKPOINT = "files/ckpts/offline_final"
 
 
 FIXED_CLOB_TOKEN_IDS = [
