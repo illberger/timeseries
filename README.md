@@ -15,5 +15,6 @@ för själva websocket-grejerna. Själva datat hämtas under exekvering, så ing
 
 För att träna en identisk modell kan man se över <code>/training/db_fetcher.query</code> för datat som används, alternativt de scheman i <code>/SQL/..</code>.
 I <code>/fetching/..</code> finns all nödvänding kod för att hämta träningsdatat (som kräver eventuell behandling, samt lagring). Det finns även tillstånd från en tuningsession
-(<code>pip install keras-tuner</code>) i <code>/training/kt_7/..</code> där den "bästa" trial:en kan laddas in, vilket bör resultera i ett likadant nätverk som finns i <code>/Backtest/files..</code>.
+(<code>pip install keras-tuner</code>) i <code>/training/kt_i/..</code> där den "bästa" trial:en kan laddas in, vilket bör resultera i ett likadant nätverk som finns i <code>/Backtest/files..</code>.
+Det kan vara lite oordning gällande kardinaliteten och samplingfrekvensen mellan <code>/Backtest</code> och <code>/training</code> då dessa är hårdkodade, så bäst att ladda ned filerna från den ursprungliga commit:en om man vill göra <code>model.fit()</code>. 
 
