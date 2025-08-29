@@ -18,7 +18,7 @@ import gc
 import model_manager
 from itertools import product
 from typing import Optional
-from CONSTANTS import SEQ_LEN, WINDOW_LENGTH_DAY, ONLINE_PATH_SAVE, OFFLINE_PATH_SENT
+from CONSTANTS import SEQ_LEN, WINDOW_LENGTH_DAY, ONLINE_PATH_SAVE, OFFLINE_PATH_SENT, CHECKPOINT
 
 #logging.basicConfig(level=logging.INFO)  # Avkommentera för extra logging - sentimentfetchingen kan nekas då det är hög kostnad på GET
 
@@ -401,7 +401,7 @@ def load_model():
             path = OFFLINE_PATH
         model = tf.keras.models.load_model(path, compile=True)
         ckpt = tf.train.Checkpoint(model=model, optimizer=model.optimizer)
-        latest = tf.train.latest_checkpoint("../training/ckpts/offline_final")
+        latest = tf.train.latest_checkpoint(CHECKPOINT)
         if latest:
             ckpt.restore(latest).expect_partial()
         true_path = path
@@ -412,6 +412,7 @@ def load_model():
 def tune() -> None:
     # start_time_ms = int(time.time() * 1000)
     start_time_ms = 1751320800000
+    symbol = "BTCUSDT"
     ws = BinanceWebSocketClient(is_sent_feature=IS_SENTIMENT_EMBEDDED)
     study = optuna.create_study(
         direction='minimize',
@@ -420,12 +421,15 @@ def tune() -> None:
     )
 
     offline_shift = 12
+
     def objective(trial: optuna.trial.Trial):
         max_days = 165
 
         per_alpha = trial.suggest_float("per_alpha", 0.5, 1.0)  # now mui importante than ever
-        per_gamma = trial.suggest_float("per_gamma", 0.15, 0.6)
-        interval = 0.25
+        per_gamma = trial.suggest_float("per_gamma", 0.15, 1.6)
+        sent_i_pct = 70
+        zcap = trial.suggest_float("zcap", 2.5, 4.0)
+        interval = 1.0
         update_interval = int(SEQ_LEN * interval)
         optimizer_args = OptimizerArgs(
             optimizer_name="Adam",
@@ -448,7 +452,7 @@ def tune() -> None:
         naive_scalar_mae.clear()
         model_errs_signed.clear()
         naive_errs_signed.clear()
-        ws.closed_candles["BTCUSDC"] = []
+        ws.closed_candles[symbol] = []
         model_manager.TOTAL_UPDATES = 0
         tf.keras.backend.clear_session()
         gc.collect()
@@ -472,9 +476,11 @@ def tune() -> None:
                                    per=True,
                                    perf_slow=1,
                                    perf_fast=0.05,
-                                   sent_gamma=per_gamma)
+                                   sent_gamma=per_gamma,
+                                   sent_i_pct=sent_i_pct,
+                                   zcap=zcap)
         metrics = monitor_predictions(
-            ws, model_mnger, "BTCUSDC", _max_days=max_days,
+            ws, model_mnger, symbol, _max_days=max_days,
             _start_time_ms=start_time_ms,
             disable_plots=True
         )
@@ -492,6 +498,7 @@ def normal_run() -> None:
     update_interval = int(SEQ_LEN * 1)
     # int(time.time() * 1000) for systemtime
     time_start = 1751320800000  # 2025-07-01
+    symbol = "BTCUSDC"
 
     optimizer_args = OptimizerArgs(
         optimizer_name="Adam",
@@ -525,10 +532,12 @@ def normal_run() -> None:
                                per=True,
                                perf_slow=1,
                                perf_fast=0.05,
-                               sent_gamma=1.5)
+                               sent_gamma=1.5,
+                               sent_i_pct=75,
+                               zcap=3.0)
 
     ws_client = BinanceWebSocketClient(is_sent_feature=IS_SENTIMENT_EMBEDDED)
-    monitor_predictions(ws_client, model_mnger, "BTCUSDC", max_days, time_start)
+    monitor_predictions(ws_client, model_mnger, symbol, max_days, time_start)
     ws_client.stop()
 
 
