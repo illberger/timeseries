@@ -5,27 +5,23 @@ import tensorflow as tf
 import numpy as np
 from line_profiler import profile
 
-symbol = "BTCUSDT"  # Testing for finding good architecture
+symbol = "BTCUSDT"
 feature_n = 8
 
 class DBFetcher:
     """
     Fetches training data \n
-    This class has huge overhead when streaming with tensorflow at every step. This can be used to
-    cache everything at first epoch, making subsequent epochs go faster
     """
-    @profile
-    def __init__(self, server='localhost', database='BinanceDB'):
+    def __init__(self, nf: int, server='localhost', database='BinanceDB'):
         """
-        you would need to set up your own schema if you want to train model using this project
+        See /SQL/*.sql for schemas, fill it with the code in /fetching/.
+        This pipeline fetches only BTCUSDT, so you can filter by BTCUSDT already in /fetching/main.py
         :param server:
         :param database:
         """
 
-        """
-        dbo.CandleSticksBtc   count(*) == 1123213
-        """
-
+        self.n_feat = nf
+        self.downsample = 1
         self.conn_str = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={server};"
@@ -34,26 +30,23 @@ class DBFetcher:
             "TrustServerCertificate=yes;"
         )
 
-       
+    @property
+    def query(self):
+        return f"""
+                    WITH ranked AS (
+                      SELECT cs.OpenTime, cs.OpenPriceZ, cs.HighPriceZ, cs.LowPriceZ, cs.ClosePriceZ, cs.VolumeZ,
+                             cs.SinTZ, cs.CosTZ, COALESCE(pm.SentimentZ, 0.0) AS Sentiment,
+                             ROW_NUMBER() OVER (ORDER BY cs.OpenTime) AS rn
+                      FROM dbo.CandleSticksBtc_Z AS cs
+                      LEFT JOIN dbo.Polymarket_Z AS pm
+                        ON pm.PriceTimeMs = cs.OpenTime
+                      WHERE cs.Symbol = ?
+                    )
+                    SELECT OpenPriceZ, HighPriceZ, LowPriceZ, ClosePriceZ, VolumeZ, SinTZ, CosTZ, Sentiment, OpenTime
+                    FROM ranked
+                    WHERE (rn - 1) % ? = 0
+                    ORDER BY OpenTime;"""
 
-
-        self.query = f"""
-                    SELECT
-                      cs.OpenPriceZ,
-                      cs.HighPriceZ,
-                      cs.LowPriceZ,
-                      cs.ClosePriceZ,
-                      cs.VolumeZ,
-                      cs.SinTZ,
-                      cs.CosTZ,
-                      COALESCE(pm.SentimentMean, 0.0) AS Sentiment
-                    FROM dbo.CandleSticksBtc_n48z AS cs
-                    LEFT JOIN dbo.Polymarket_n48  AS pm
-                      ON pm.PriceTimeMs = cs.OpenTime
-                    WHERE cs.Symbol = '{symbol}'
-                    ORDER BY cs.OpenTime;
-                """
- 
 
     @profile
     def row_count(self) -> int:
@@ -63,20 +56,30 @@ class DBFetcher:
         """
         """
         OBS! Dubbelkolla namnet på tabellen!
+        TODO: gör tabell(erna) till ett instans-attribut
         """
-        q = "SELECT COUNT(*) FROM dbo.CandleSticksBtc_n48z"
+        q = f"""WITH ranked AS (
+              SELECT ROW_NUMBER() OVER (ORDER BY cs.OpenTime) AS rn
+              FROM dbo.CandleSticksBtc_Z cs
+              WHERE cs.Symbol = '{symbol}'
+            )
+            SELECT COUNT(*) AS n
+            FROM ranked
+            WHERE (rn - 1) % {self.downsample} = 0;
+            """
         with pyodbc.connect(self.conn_str) as conn, conn.cursor() as cur:
             cur.execute(q)
             return cur.fetchone()[0]
 
-  
+    def set_downsample(self, downsample: int) -> None:
+        self.downsample = downsample
 
     def _row_generator(self):
         with pyodbc.connect(self.conn_str) as conn:
             cur = conn.cursor()
-            cur.execute(self.query)
+            cur.execute(self.query, (symbol, int(self.downsample)))
             for row in cur:
-                yield np.asarray(row, dtype=np.float32)
+                yield np.asarray(row[:self.n_feat], dtype=np.float32)
 
     def get_dataset(self) -> tf.data.Dataset:
         output_signature = tf.TensorSpec(shape=(feature_n,), dtype=tf.float32)
@@ -123,5 +126,7 @@ class DBFetcher:
                 cov = (x[:-t] * x[t:]).mean()
                 autocorr.append(cov / var)
         return pd.Series(autocorr, index=range(nlags + 1))
+
+
 
   
